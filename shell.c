@@ -1,3 +1,5 @@
+#include <fcntl.h>
+#include <linux/limits.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -6,16 +8,37 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-void execute(char **args, int back_task) {
+struct command {
+    char *args[64];
+    char *infile;
+    char *outfile;
+};
 
+void execute(struct command IO, int back_test) {
     pid_t child = fork();
 
     if (child == 0) {
-        execvp(args[0], args);
+        if (IO.outfile != NULL) {
+            int out = open(IO.outfile, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            if (out == -1) {
+                perror("errno");
+                exit(1);
+            }
+            dup2(out, 1);
+        }
+        if (IO.infile != NULL) {
+            int in = open(IO.infile, O_RDONLY);
+            if (in == -1) {
+                perror("errno");
+                exit(1);
+            }
+            dup2(in, 0);
+        }
+        execvp(IO.args[0], IO.args);
         perror("execvp");
         exit(1);
     } else if (child > 0) {
-        if (back_task == 0) {
+        if (back_test == 0) {
             waitpid(child, NULL, 0);
         }
     } else if (child < 0) {
@@ -27,11 +50,15 @@ int main() {
 
     char *buffer = NULL;
     size_t size = 0;
+    struct command IO;
 
-    char *args[64];
     while (1) {
-        waitpid(-1, NULL, WNOHANG);
-        printf("sHELL>");
+
+        while (waitpid(-1, NULL, WNOHANG) > 0)
+            ;
+
+        char cwd[PATH_MAX];
+        printf("Shell %s>", getcwd(cwd, sizeof(cwd)));
         if (getline(&buffer, &size, stdin) == -1) {
             break;
         }
@@ -43,34 +70,47 @@ int main() {
         char *saveptr;
 
         char *token = strtok_r(buffer, " ", &saveptr);
+
         int back_task = 0;
+        IO.infile = NULL;
+        IO.outfile = NULL;
 
         while (token != NULL && index < 63) {
-            if (strcmp(token, "&") != 0) {
-                args[index] = token;
-                index++;
-            } else {
+            if (strcmp(token, "&") == 0) {
                 back_task = 1;
+            } else if (strcmp(token, "~") == 0) {
+                IO.args[index] = getenv("HOME");
+                index++;
+            } else if (strcmp(token, "<") == 0) {
+                token = strtok_r(NULL, " ", &saveptr);
+                IO.infile = token;
+            } else if (strcmp(token, ">") == 0) {
+                token = strtok_r(NULL, " ", &saveptr);
+                IO.outfile = token;
+
+            } else {
+                IO.args[index] = token;
+                index++;
             }
             token = strtok_r(NULL, " ", &saveptr);
         }
-        args[index] = NULL;
+        IO.args[index] = NULL;
 
-        if (args[0] == NULL) {
+        if (IO.args[0] == NULL) {
             continue;
         }
 
-        if (strcmp(args[0], "cd") == 0) {
-            if (args[1] == NULL) {
+        if (strcmp(IO.args[0], "cd") == 0) {
+            if (IO.args[1] == NULL || strcmp(IO.args[1], "~") == 0) {
                 chdir(getenv("HOME"));
-            } else if (chdir(args[1]) != 0) {
+            } else if (chdir(IO.args[1]) != 0) {
                 perror("cd");
             }
 
             continue;
         }
 
-        execute(args, back_task);
+        execute(IO, back_task);
     }
 
     free(buffer);
